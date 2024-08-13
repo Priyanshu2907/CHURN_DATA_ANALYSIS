@@ -1,0 +1,138 @@
+SELECT COUNT(*) AS total_records FROM loan_data;
+DESCRIBE loan_data;
+SELECT * FROM loan_data LIMIT 5;
+WITH loan_stats_cte AS (
+    SELECT
+        CONCAT(FORMAT(SUM(annual_income) / 1000000,2), ' Million($)') Total_Value,
+        ROUND(AVG(annual_income)) AS Average,
+        MIN(annual_income) AS Minimum,
+        MAX(annual_income) AS Maximum,
+        ROUND(STDDEV(annual_income)) AS std_dev
+    FROM loan_data
+),
+quartile_cte AS (
+    SELECT
+            MAX(CASE WHEN quartile = 1 THEN annual_income END) AS "Q1_25%",
+            MAX(CASE WHEN quartile = 2 THEN annual_income END) AS Median,
+            MAX(CASE WHEN quartile = 3 THEN annual_income END) AS "Q3_75%"
+        FROM (
+            SELECT  annual_income,  NTILE(4) OVER (ORDER BY annual_income) AS quartile  FROM loan_data
+                   ) AS quartile_groups
+)
+SELECT * FROM loan_stats_cte, quartile_cte;
+
+SELECT  address_state,  COUNT(*) AS count,
+    CONCAT(ROUND(COUNT(*) / (SELECT COUNT(*) FROM loan_data) * 100, 2), '%') AS percentage
+FROM loan_data GROUP BY address_state  ORDER BY count DESC;
+
+SELECT 
+    MIN(issue_date) AS earliest_issue_date,
+    MAX(issue_date) AS latest_issue_date
+FROM loan_data;
+
+SELECT * FROM loan_data
+WHERE COALESCE(id, address_state, application_type, emp_length, emp_title, grade, 
+               home_ownership, issue_date, last_credit_pull_date, last_payment_date, 
+               loan_status, next_payment_date, member_id, purpose, sub_grade, term, 
+               verification_status, annual_income, dti, installment, int_rate, 
+               loan_amount, total_acc, total_payment) IS NULL;
+
+SELECT column1, column2, COUNT(*)  FROM table_name    GROUP BY column1, column2   HAVING COUNT(*) > 1;
+SELECT id, address_state, application_type, emp_length, emp_title, grade, home_ownership, issue_date, last_credit_pull_date, last_payment_date, loan_status, next_payment_date, member_id, purpose, sub_grade, term, verification_status, annual_income, dti, installment, int_rate, loan_amount, total_acc, total_payment, 
+COUNT(*) AS duplicate_count
+FROM loan_data
+GROUP BY id, address_state, application_type, emp_length, emp_title, grade, home_ownership, issue_date, last_credit_pull_date, last_payment_date, loan_status, next_payment_date, member_id, purpose, sub_grade, term, verification_status, annual_income, dti, installment, int_rate, loan_amount, total_acc, total_payment
+HAVING COUNT(*) > 1;
+
+CREATE TABLE loan_data_backup LIKE loan_data;
+
+INSERT INTO loan_data_backup SELECT * FROM loan_data LIMIT 100;
+
+-- Change data type of address_state from TEXT to VARCHAR
+ALTER TABLE bank_loan_analysis.loan_data_backup
+MODIFY COLUMN address_state VARCHAR(50);
+
+-- Change data type of application_type from TEXT to ENUM
+ALTER TABLE bank_loan_analysis.loan_data_backup
+MODIFY COLUMN application_type ENUM('INDIVIDUAL');
+
+-- Change data type of emp_length from TEXT to ENUM
+ALTER TABLE bank_loan_analysis.loan_data_backup
+MODIFY COLUMN emp_length ENUM('< 1 year', '1 year', '2 years', '3 years', '4 years', '5 years', '6 years', '7 years', '8 years', '9 years', '10+ years');
+
+-- Change data type of grade from TEXT to ENUM
+ALTER TABLE bank_loan_analysis.loan_data_backup
+MODIFY COLUMN grade ENUM('A', 'B', 'C', 'D', 'E', 'F', 'G');
+
+-- Change data type of home_ownership from TEXT to ENUM
+ALTER TABLE bank_loan_analysis.loan_data_backup
+MODIFY COLUMN home_ownership ENUM('MORTGAGE', 'RENT', 'OWN', 'OTHER', 'NONE');
+
+-- Change data type of issue_date, last_credit_pull_date, last_payment_date, next_payment_date from TEXT to DATE
+ALTER TABLE bank_loan_analysis.loan_data_backup
+MODIFY COLUMN issue_date DATE,
+MODIFY COLUMN last_credit_pull_date DATE,
+MODIFY COLUMN last_payment_date DATE,
+MODIFY COLUMN next_payment_date DATE;
+
+-- Change data type of loan_status from TEXT to ENUM
+ALTER TABLE bank_loan_analysis.loan_data_backup
+MODIFY COLUMN loan_status ENUM('Fully Paid', 'Charged Off', 'Current');
+
+-- Change data type of purpose, sub_grade from TEXT to VARCHAR
+ALTER TABLE bank_loan_analysis.loan_data_backup
+MODIFY COLUMN purpose VARCHAR(255),
+MODIFY COLUMN sub_grade VARCHAR(5); -- adjust length if needed
+
+-- Change data type of term from TEXT to ENUM
+ALTER TABLE bank_loan_analysis.loan_data_backup
+MODIFY COLUMN term ENUM(' 36 months', ' 60 months');
+
+-- Change data type of verification_status from TEXT to ENUM
+ALTER TABLE bank_loan_analysis.loan_data_backup
+MODIFY COLUMN verification_status ENUM('Verified', 'Not Verified', 'Source Verified');
+
+-- Change data type of dti, installment, int_rate from double to DECIMAL
+ALTER TABLE bank_loan_analysis.loan_data_backup
+MODIFY COLUMN dti DECIMAL(10, 4), -- adjust precision and scale as needed
+MODIFY COLUMN installment DECIMAL(10, 2), -- adjust precision and scale as needed
+MODIFY COLUMN int_rate DECIMAL(6, 4); -- adjust precision and scale as needed
+
+DELIMITER //
+CREATE PROCEDURE LoanPerformanceAnalysis(
+    IN segment_category VARCHAR(50)
+)
+BEGIN
+    SET @sql = CONCAT('
+        SELECT 
+            ', segment_category, ' AS segment_category,
+            SUM(CASE WHEN loan_status = ''Fully Paid'' THEN 1 ELSE 0 END) AS Fully_Paid,
+            SUM(CASE WHEN loan_status = ''Charged Off'' THEN 1 ELSE 0 END) AS Defaulted_loan,
+            SUM(CASE WHEN loan_status = ''Current'' THEN 1 ELSE 0 END) AS Active_loan,
+            COUNT(*) AS total_loans,
+            CONCAT(ROUND(SUM(CASE WHEN loan_status = ''Fully Paid'' THEN 1 ELSE 0 END) / COUNT(*) * 100, 2), ''%'') AS repayment_rate,
+            ROUND((COUNT(CASE WHEN loan_status = ''Charged Off'' THEN 1 END) / COUNT(*)) * 100, 2) AS default_rate_pct
+        FROM
+            loan_data
+        GROUP BY 
+            ', segment_category, '
+        ORDER BY 
+            repayment_rate DESC;
+    ');
+    PREPARE stmt FROM @sql;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END//
+DELIMITER ;
+
+
+
+CREATE VIEW vw_ChurnData AS
+    SELECT * 
+    FROM prod_Churn 
+    WHERE Customer_Status IN ('Churned', 'Stayed');
+
+CREATE VIEW vw_JoinData AS
+    SELECT * 
+    FROM prod_Churn 
+    WHERE Customer_Status = 'Joined';
